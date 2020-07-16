@@ -4,18 +4,30 @@
 
 #define T std::cerr << __LINE__ << std::endl;
 
+struct px_t
+{
+	float intensity = 0.f;	// scales from 0 to 1
+	bool solid = false;
+	sf::Color color = sf::Color::Black;
+
+	void reset()
+	{
+        intensity = 0.f;
+        solid = false;
+        color = sf::Color::Black;
+	}
+};
+
 const int width = 100;
 const int height = 100;
+const float ray_length = 30.f;
 const float PI = 3.1415f;
+int px_smooth_level = 2;
 float px_sz = 5.f;
-sf::Color pixels[width][height];
+bool px_updated = false;
+px_t pixels[width][height];
 sf::VertexArray vertices(sf::Quads, width * height * 4);
 sf::RenderWindow window(sf::VideoMode(width * px_sz, height * px_sz), "jpx");
-
-float norm(const sf::Vector2i& vec)
-{
-	return std::sqrt((vec.x * vec.x) + (vec.y * vec.y));
-}
 
 float norm(const sf::Vector2f& vec)
 {
@@ -25,11 +37,6 @@ float norm(const sf::Vector2f& vec)
 float dist(const sf::Vector2f& a, const sf::Vector2f& b)
 {
 	return norm(b - a);
-}
-
-const sf::Color& px_clr(int i, int j)
-{
-	return pixels[i][j];
 }
 
 float radius(float a)
@@ -45,90 +52,122 @@ void px_pos(int i, int j, int x, int y)
     vertices[(j * width + i) * 4 + 3].position = sf::Vector2f(x, y+1) * px_sz;
 }
 
+void px_intensity(int x, int y, float mod)
+{
+	float& i = pixels[x][y].intensity;
+	i = mod;
+
+	if 		(i > 1.f)	i = 1.f;
+	else if (i < 0.f)	i = 0.f;
+}
+
 void px_clr(int i, int j, const sf::Color& newColor)
 {
-	pixels[i][j] = newColor;
+	pixels[i][j].color = newColor;
 	for (int k = 0; k < 4; ++k)
 		vertices[(j * width + i) * 4 + k].color = newColor;
 }
 
-void px_cast_ray(int x, int y, float angle)
+void px_colorize()
+{
+    for (int x = 0; x < width; ++x)
+    {
+        for (int y = 0; y < height; ++y)
+        {
+            if (!pixels[x][y].solid)
+            {
+            	sf::Uint8 c = pixels[x][y].intensity * 255.f;
+	            px_clr(x, y, { c, c, c });
+            }
+            else
+            	px_clr(x, y, sf::Color::Red);
+        }
+    }
+}
+
+void px_cast_ray(int from_x, int from_y, float angle)
 {
 	angle = radius(angle);
-	sf::Vector2f src(x, y);
+	sf::Vector2f src((float)from_x, (float)from_y);
 	sf::Vector2f pt(src);
 	sf::Vector2f step = sf::Vector2f(std::cos(angle), std::sin(angle));
 
 	while (true)
 	{
-	    pt += step;
+	    int x = std::round(pt.x);
+	    int y = std::round(pt.y);
 
-	    if (pt.x < 0 || pt.y < 0 || pt.x >= width || pt.y >= height)
+	    if (x < 0 || y < 0 || x >= width || y >= height || pixels[x][y].solid)
             break;
 
         float d = dist(pt, src);
-        if (d > 200.f)
+        if (d >= ray_length)
         	break;
 
-	    float a = d * 0.0005f;
+        float mod = (ray_length - d) / ray_length;
 
-	    sf::Color clr = px_clr(pt.x, pt.y);
-	    float c = 1 / a;
-	    if (c > 255) c = 255;
-		clr = sf::Color(c, c, c);
+	    px_intensity(x, y, pixels[x][y].intensity + mod);
 
-		px_clr(pt.x, pt.y, clr);
+	    pt += step;
 	}
 }
 
-void px_uniform()
+void px_smooth()
 {
-    for (int i = 0; i < width; ++i)
+    for (int k = 0; k < px_smooth_level; ++k)
     {
-        for (int j = 0; j < height; ++j)
-        {
-            if (px_clr(i, j) == sf::Color::Black)
-            {
-                std::vector<sf::Vector2i> neighbors;
-                if (i > 0) 			neighbors.push_back({i-1, j});
-                if (j > 0) 			neighbors.push_back({i, j-1});
-                if (i+1 < width)	neighbors.push_back({i+1, j});
-                if (j+1 < height)	neighbors.push_back({i, j+1});
+    	for (int x = 0; x < width; ++x)
+	    {
+	        for (int y = 0; y < height; ++y)
+	        {
+	            // if (pixels[x][y].intensity == 0.f)
+	            // {
+	                float s = 0.f;
+	                int c = 0;
 
-                sf::Uint8 r = 0;
-                sf::Uint8 g = 0;
-                sf::Uint8 b = 0;
-                for (const sf::Vector2i& v : neighbors)
-                {
-                	const sf::Color& neighClr = px_clr(v.x, v.y);
-                	r += neighClr.r;
-                	g += neighClr.g;
-                	b += neighClr.b;
-                }
+	                if (x > 0) 							{ s += pixels[x-1][y].intensity; ++c; }
+	                if (y > 0) 							{ s += pixels[x][y-1].intensity; ++c; }
+	                if (x+1 < width)					{ s += pixels[x+1][y].intensity; ++c; }
+	                if (y+1 < height)					{ s += pixels[x][y+1].intensity; ++c; }
 
-                r /= neighbors.size();
-                g /= neighbors.size();
-                b /= neighbors.size();
+	                if (x > 0 && y > 0)					{ s += pixels[x-1][y-1].intensity; ++c; }
+	                if (x > 0 && y+1 < height)			{ s += pixels[x-1][y+1].intensity; ++c; }
+	                if (x+1 < width && y > 0)			{ s += pixels[x+1][y-1].intensity; ++c; }
+	                if (x+1 < width && y+1 < height)	{ s += pixels[x+1][y+1].intensity; ++c; }
 
-                if (r > 255) r = 255;
-                if (g > 255) g = 255;
-                if (b > 255) b = 255;
-
-                px_clr(i, j, { r, g, b });
-            }
-        }
+	                px_intensity(x, y, s / (float)c);	// the frame implies c != 0
+	            // }
+	        }
+	    }
     }
 }
 
 void px_cast_light(int x, int y)
 {
-    px_clr(x, y, sf::Color::White);
+	int nb_rays = 180;
+	for (float k = 0; k < nb_rays; ++k)
+		px_cast_ray(x, y, 360 / nb_rays * k);
+}
 
-	// px_cast_ray(x, y, 0.f);
-	for (int k = 0; k < 360; ++k)
-		px_cast_ray(x, y, k);
+void px_solid(int x, int y, int w, int h)
+{
+	for (int i = x; i < x+w; ++i)
+	{
+		for (int j = y; j < y+h; ++j)
+		{
+			pixels[i][j].solid = true;
+			px_intensity(i, j, 0.f);
+		}
+	}
+}
 
-    px_uniform();
+void px_reset()
+{
+	for (int i = 0; i < width; ++i)
+	{
+		for (int j = 0; j < height; ++j)
+			pixels[i][j].reset();
+	}
 }
 
 int main()
@@ -136,15 +175,12 @@ int main()
 	for (int i = 0; i < width; ++i)
 	{
 		for (int j = 0; j < height; ++j)
-		{
 		    px_pos(i, j, i, j);
-			px_clr(i, j, sf::Color::Black);
-		}
 	}
 
-	sf::RectangleShape ex({px_sz, px_sz});
-	ex.setFillColor(sf::Color::Yellow);
-
+	int sx = 70;
+	int sy = 70;
+	int ss = 10;
 	sf::Vector2i lightSrc(width / 2, height / 2);
 
 	while (window.isOpen())
@@ -157,18 +193,39 @@ int main()
 
             else if (e.type == sf::Event::KeyPressed)
             {
-                if 		(e.key.code == sf::Keyboard::Left)	lightSrc.x--;
-                else if (e.key.code == sf::Keyboard::Up)	lightSrc.y--;
-                else if (e.key.code == sf::Keyboard::Right) lightSrc.x++;
-                else if (e.key.code == sf::Keyboard::Down)	lightSrc.y++;
+            	bool modified = true;
+                switch (e.key.code)
+                {
+            	case sf::Keyboard::Left:	sx--; break;
+            	case sf::Keyboard::Up:		sy--; break;
+            	case sf::Keyboard::Right:	sx++; break;
+            	case sf::Keyboard::Down:	sy++; break;
+            	case sf::Keyboard::Z:		lightSrc.y--; break;
+            	case sf::Keyboard::Q:		lightSrc.x--; break;
+            	case sf::Keyboard::S:		lightSrc.y++; break;
+            	case sf::Keyboard::D:		lightSrc.x++; break;
+            	case sf::Keyboard::P:		if (px_smooth_level > 0)	px_smooth_level--;	break;
+            	case sf::Keyboard::M:		if (px_smooth_level < 10)	px_smooth_level++;	break;
+            	default:					modified = false; break;
+                }
+
+                if (modified) px_updated = false;
             }
 		}
 
-		px_cast_light(lightSrc.x, lightSrc.y);
+
+		if (!px_updated)
+		{
+			px_reset();
+			px_solid(sx, sy, ss, ss);
+			px_cast_light(lightSrc.x, lightSrc.y);
+			px_smooth();
+	        px_colorize();
+	        px_updated = true;
+		}
 
 		window.clear();
 		window.draw(vertices);
-		//window.draw(ex);
 		window.display();
 	}
 
